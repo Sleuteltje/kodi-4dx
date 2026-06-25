@@ -371,10 +371,11 @@ class TrackExecuter:
 				try:
 					self.udp_sock.sendto(packet_on, (ip, 21324))
 				except Exception as e:
-					print(f"Failed to send UDP to {ip}: {e}")
+					pass
 			
-			# Wait duration
-			time.sleep(duration_ms / 1000.0)
+			# Wait duration (Min 50ms to ensure ESP renders the frame)
+			sleep_dur = max(0.05, duration_ms / 1000.0)
+			time.sleep(sleep_dur)
 			
 			# Turn OFF
 			for ip in self.wled_ips:
@@ -426,16 +427,21 @@ class TrackExecuter:
 		
 		def lifx_thread(bulb, duration):
 			try:
-				power = bulb.get_power()
-				if power == 0:
-					bulb.set_power(65535, rapid=True)
+				# Fetch current state (takes ~50ms)
+				original_power = bulb.get_power()
+				original_color = bulb.get_color()
 				
-				# set_waveform: is_transient=1 means it naturally restores to the previous color
-				# color format: [Hue, Saturation, Brightness, Kelvin]
-				bulb.set_waveform(is_transient=1, color=[0, 0, 65535, 6500], period=int(duration), cycles=1, duty_cycle=0, waveform=4)
+				# Force ON and White instantly (bypass waveform interpolation)
+				bulb.set_power(65535, rapid=True)
+				bulb.set_color([0, 0, 65535, 6500], rapid=True)
 				
-				if power == 0:
-					time.sleep(duration / 1000.0)
+				# Wait duration (Min 50ms)
+				sleep_dur = max(0.05, duration / 1000.0)
+				time.sleep(sleep_dur)
+				
+				# Restore original state
+				bulb.set_color(original_color, rapid=True)
+				if original_power == 0:
 					bulb.set_power(0, rapid=True)
 			except Exception as e:
 				print(f"[{self.track_name.upper()}] LIFX Error: {e}")
