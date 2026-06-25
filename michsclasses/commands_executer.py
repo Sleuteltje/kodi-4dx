@@ -6,6 +6,11 @@ import time
 import socket
 import struct
 
+try:
+	from lifxlan import Light
+except ImportError:
+	Light = None
+
 class CommandsExecuter:
 
 	def __init__(self, DeviceExecuter, movie_filename = None, filename = None):
@@ -244,12 +249,20 @@ class TrackExecuter:
 		self.wled_ips = wled_ips if wled_ips else []
 		self.lifx_ips = lifx_ips if lifx_ips else []
 		self.lifx_macs = {}
+		self.lifx_bulbs = []
 		
-		# Set up UDP socket for direct WLED/LIFX control
+		# Set up UDP socket for direct WLED control
 		self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 		
 		if self.lifx_ips and self.track_name == "lightning":
 			self._discover_lifx_macs()
+			if Light:
+				for ip in self.lifx_ips:
+					mac = self.lifx_macs.get(ip)
+					if mac:
+						mac_hex = ':'.join(f'{b:02x}' for b in mac[:6])
+						bulb = Light(mac_hex, ip)
+						self.lifx_bulbs.append(bulb)
 
 	def get_filename(self):
 		return self.track_name
@@ -406,34 +419,27 @@ class TrackExecuter:
 		sock.close()
 
 	def _send_lifx_udp_flash(self, intensity_pct, duration_ms):
-		if not self.lifx_ips:
+		if not self.lifx_bulbs:
 			return
 		
-		print(f"[{self.track_name.upper()}] Sending LIFX UDP Flash for {duration_ms}ms")
+		print(f"[{self.track_name.upper()}] Sending LIFX Flash via lifxlan for {duration_ms}ms")
 		
-		# LIFX Payload for SetWaveform (Type 103)
-		payload = bytearray([0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0x64, 0x19])
-		payload += struct.pack("<I", int(duration_ms))
-		payload += struct.pack("<f", 1.0) # cycles
-		payload += struct.pack("<h", 0)   # skew_ratio
-		payload += bytearray([0x04])      # waveform: 4 (Pulse)
-		
-		for ip in self.lifx_ips:
-			mac = self.lifx_macs.get(ip, bytearray(8))
-			header = bytearray([
-				0x39, 0x00, 0x00, 0x34, 0x00, 0x00, 0x00, 0x00
-			])
-			header += mac
-			header += bytearray([
-				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-				0x67, 0x00, 0x00, 0x00
-			])
-			
-			packet = header + payload
-			
+		def lifx_thread(bulb, duration):
 			try:
-				self.udp_sock.sendto(packet, (ip, 56700))
+				power = bulb.get_power()
+				if power == 0:
+					bulb.set_power(65535, rapid=True)
+				
+				# set_waveform: is_transient=1 means it naturally restores to the previous color
+				# color format: [Hue, Saturation, Brightness, Kelvin]
+				bulb.set_waveform(is_transient=1, color=[0, 0, 65535, 6500], period=int(duration), cycles=1, duty_cycle=0, waveform=4)
+				
+				if power == 0:
+					time.sleep(duration / 1000.0)
+					bulb.set_power(0, rapid=True)
 			except Exception as e:
-				print(f"Failed to send UDP to {ip}: {e}")
+				print(f"[{self.track_name.upper()}] LIFX Error: {e}")
+
+		for bulb in self.lifx_bulbs:
+			threading.Thread(target=lifx_thread, args=(bulb, duration_ms)).start()
 
