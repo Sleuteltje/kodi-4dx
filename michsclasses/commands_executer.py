@@ -1,0 +1,313 @@
+from michsclasses import commands_parser
+import asyncio
+import os
+
+class CommandsExecuter:
+
+	def __init__(self, DeviceExecuter, movie_filename = None, filename = None):
+		self.DeviceExecuter = DeviceExecuter
+		self.movie_filename, self.directory = Kodi.get_file()
+		self.old_movie_filename = None
+		self.Parser = None
+		
+		self.filename = filename
+		if self.filename is None:
+			self.filename = self.DeviceExecuter.get_filename()
+		self.current_time = 0 				#in milliseconds
+		self.old_current_time = 0			#in milliseconds
+		
+		
+		self.load_file()
+
+	def load_file(self, filepath=None):
+		import zipfile
+		if filepath:
+			self.Parser = commands_parser.Commands(file_path=filepath)
+			print("Loaded Parser through filepath")
+			return self.Parser
+
+		if self.movie_filename is None:
+			return None
+
+		movie_filename_without_extension, file_extension = os.path.splitext(self.movie_filename)
+		
+		# 1. Try to load from .4dz zip file
+		zip_path = os.path.join(self.directory, movie_filename_without_extension + '.4dz')
+		if os.path.exists(zip_path):
+			try:
+				with zipfile.ZipFile(zip_path, 'r') as z:
+					# Find the correct file inside the zip based on self.filename (e.g. 'wind')
+					target_name = self.filename.lower()
+					for z_filename in z.namelist():
+						if target_name in z_filename.lower():
+							with z.open(z_filename) as f:
+								self.Parser = commands_parser.Commands(raw_lines=f.readlines())
+								print(f"Loaded {z_filename} from {zip_path}")
+								return self.Parser
+			except Exception as e:
+				print(f"Error loading zip {zip_path}: {e}")
+
+		# 2. Fallback to old behavior and standalone files
+		possible_filenames = []
+		if self.filename.endswith('.txt') or self.filename.endswith('.4dx'):
+			possible_filenames.append(self.filename)
+		else:
+			# If it's just a track name (e.g. "wind")
+			possible_filenames.append(f"{movie_filename_without_extension}.{self.filename}.4dx") # e.g. movie.wind.4dx
+			possible_filenames.append(f"{self.filename}.4dx") # e.g. wind.4dx
+			possible_filenames.append(f"{self.filename.capitalize()}.txt") # e.g. Wind.txt
+			possible_filenames.append(f"{self.filename}.txt") # e.g. wind.txt
+
+		# Check legacy 4D folder first
+		for fname in possible_filenames:
+			path = os.path.join(self.directory, f'4D {movie_filename_without_extension}', fname)
+			if os.path.exists(path):
+				self.Parser = commands_parser.Commands(file_path=path)
+				print(f"Loaded commands file through 4D directory: {fname}")
+				return self.Parser
+
+		# Check movie directory next
+		for fname in possible_filenames:
+			path = os.path.join(self.directory, fname)
+			if os.path.exists(path):
+				self.Parser = commands_parser.Commands(file_path=path)
+				print(f"Loaded commands file next to movie: {fname}")
+				return self.Parser
+
+		print("WARNING: Could not load Parser! Could not find commands file for: "+self.filename)
+		return None
+
+	def sync_with_movie(self, movie_filename, directory, kodi_time):
+		self.old_movie_filename = self.movie_filename
+		self.old_current_time = self.current_time
+
+		self.movie_filename = movie_filename
+		self.directory = directory
+		
+		# If nothing is playing, just return gracefully
+		if self.movie_filename is None:
+			if self.old_movie_filename is not None:
+				print("Movie playback stopped.")
+			return
+
+		if kodi_time is False:
+			return
+
+		delay = 0
+		if hasattr(self.DeviceExecuter, 'get_delay'):
+			delay = self.DeviceExecuter.get_delay()
+
+		self.current_time = kodi_time - delay
+
+		if self.old_movie_filename != self.movie_filename:
+			print(f"Playing Movie has been switched to: {self.movie_filename}")
+			self.load_file()
+			if self.Parser:
+				self.Parser.delete_past_commands(self.current_time)
+			print("New file loaded..")
+			return
+
+		if not self.Parser:
+			# We already warned during load_file that no track was found. 
+			# Return silently to prevent log spam every 0.1 seconds.
+			return False
+
+		if self.movie_skipped():
+			return
+		self.execute_commands()		
+
+
+	def execute_commands(self):
+		commands_to_execute = self.Parser.commands_to_execute(self.old_current_time, self.current_time)
+		print("Currently playing movie: "+self.movie_filename)
+		print("old_current_time: "+str(self.old_current_time)+" | current_time: "+str(self.current_time))
+		print("Time in normal time: "+self.formatted_time(self.current_time))
+		print("Previous Command: "+str(self.Parser.get_previous_command()))
+		print("Next Command: "+str(self.Parser.get_next_command()))
+		print("Commands to do: "+str(len(commands_to_execute)))
+		print("-------------------------------------------------")
+
+		for timestamp_to_do, command_to_do in commands_to_execute:
+			self.execute_command(timestamp_to_do, command_to_do)
+		return commands_to_execute
+
+	def execute_command(self, timestamp_to_do, command_to_do):
+		self.Parser.remove_command(timestamp_to_do)
+		self.Parser.set_previous_command({timestamp_to_do : command_to_do})
+		return self.call_deviceexecuter_method(command_to_do)
+
+	def call_deviceexecuter_method(self, command):
+		# If the device executer has a generic execute_action method (for percentages)
+		if hasattr(self.DeviceExecuter, 'execute_action'):
+			return self.DeviceExecuter.execute_action(command)
+		
+		# Fallback to old behavior for string commands like HIGH, LOW
+		if command is not None and isinstance(command, str):
+			if hasattr(self.DeviceExecuter, command) and callable(getattr(self.DeviceExecuter, command)):
+				return getattr(self.DeviceExecuter, command)()
+		print(f"Error: Could not execute command '{command}' on DeviceExecuter.")
+		return False
+
+	def movie_skipped(self):
+		if self.movie_skipped_backwards() or self.movie_skipped_forwards():
+			print("The movie was skipped.. restoring entire commands")
+			self.Parser.reset(self.current_time)
+			previous_command = self.Parser.get_previous_command()
+			if previous_command:
+				method_name = next(iter(previous_command.values()), None)
+				print(f"method name: {method_name}")
+				self.call_deviceexecuter_method(method_name) #Do the previous command, because this might be a scene where the previous command is still active
+			return True #The Movie was skipped
+		return False
+
+	def movie_skipped_backwards(self):
+		return self.current_time < self.old_current_time
+
+	def movie_skipped_forwards(self):
+		return (self.current_time - self.old_current_time) > 1000 #more then 1 second difference
+	
+
+
+	def directorypath_from_filepath(self, filepath):
+		directorypath = os.path.dirname(filepath) # Extract the directory path
+
+		if not os.path.exists(directorypath):
+			return None
+
+		return os.path.abspath(directorypath)
+
+	def filename_from_filepath(self, filepath):
+		filename = os.path.basename(filepath)
+		return filename
+
+	def formatted_time(self, milliseconds):
+		return "{:02}:{:02}:{:02}:{:03}".format(
+			int((milliseconds / (1000 * 60 * 60)) % 24),  # hours
+			int((milliseconds / (1000 * 60)) % 60),       # minutes
+			int((milliseconds / 1000) % 60),              # seconds
+			int(milliseconds % 1000)                      # milliseconds
+		)
+
+
+class WindExecuter:
+
+	def __init__(self, Fan):
+		self.Fan = Fan
+
+	def get_filename(self):
+		return "wind"
+
+	def execute_action(self, action):
+		if isinstance(action, int):
+			if action == 0:
+				print("FAN TURNED OFF (0%)")
+				return self.Fan.turn_off()
+			else:
+				print(f"FAN SET TO {action}%")
+				return self.Fan.turn_on(action)
+		elif isinstance(action, str):
+			action_upper = action.upper()
+			if hasattr(self, action_upper):
+				return getattr(self, action_upper)()
+		return False
+
+	def OFF(self):
+		print("FAN TURNED ON")
+		return self.Fan.turn_off()
+
+	def ECO(self):
+		print("FAN TURNED ECO")
+		return self.Fan.eco_mode()
+
+	def LOW(self):
+		print("FAN TURNED LOW")
+		return self.Fan.turn_on(25)
+
+	def MED(self):
+		print("FAN TURNED MED")
+		return self.Fan.turn_on(50)
+
+	def HIGH(self):
+		print("FAN TURNED HIGH")
+		return self.Fan.turn_on(100)
+
+class TrackExecuter:
+	def __init__(self, track_name, ApiClient, delay=0):
+		self.track_name = track_name
+		self.ApiClient = ApiClient
+		self.delay = delay
+
+	def get_filename(self):
+		return self.track_name
+
+	def get_delay(self):
+		return self.delay
+
+	def execute_action(self, action):
+		import re
+		# Default payload structure
+		payload = {
+			"track": self.track_name,
+			"command": "",
+			"intensity": "",
+			"duration": "",
+			"data": ""
+		}
+
+		intensity_map = {
+			"ECO": 20,
+			"LOW": 25,
+			"MED": 50,
+			"HIGH": 100
+		}
+
+		if isinstance(action, int):
+			# Just a percentage
+			if action == 0:
+				payload["command"] = "OFF"
+				payload["intensity"] = 0
+			else:
+				payload["command"] = "ON"
+				payload["intensity"] = action
+		elif isinstance(action, str):
+			# E.g. "OFF,0" or "FLASH(100, 1000)" or "BLUE,FLASH(10)" or "ORANGE,30"
+			action_str = action.upper().strip()
+			
+			if action_str.startswith("OFF"):
+				payload["command"] = "OFF"
+				payload["intensity"] = 0
+			elif action_str in intensity_map:
+				payload["command"] = "ON"
+				payload["intensity"] = intensity_map[action_str]
+			else:
+				# Check for FLASH command: FLASH(intensity, duration)
+				flash_match = re.search(r'FLASH\((\d+)(?:,\s*(\d+))?\)', action_str)
+				if flash_match:
+					payload["command"] = "FLASH"
+					payload["intensity"] = int(flash_match.group(1))
+					if flash_match.group(2):
+						payload["duration"] = int(flash_match.group(2))
+					action_str = re.sub(r'FLASH\(\d+(?:,\s*\d+)?\)', '', action_str)
+				
+				# Check for plain intensity at the end of string (e.g. "BLUE, 100" or "ORANGE,30")
+				brightness_match = re.search(r',\s*(\d+)$', action_str)
+				if brightness_match and not payload["command"]: # If not already FLASH
+					payload["command"] = "ON"
+					payload["intensity"] = int(brightness_match.group(1))
+					action_str = re.sub(r',\s*\d+$', '', action_str)
+
+				# Clean up remaining string to use as "data" (e.g. "BLUE", "THUNDER(100)")
+				action_str = action_str.strip(', ')
+				if action_str:
+					# If there wasn't a command set (e.g. it was just "STARTMOVIE" or "PAUSE")
+					if not payload["command"] and not payload["intensity"]:
+						payload["command"] = action_str
+					else:
+						payload["data"] = action_str
+					
+		# Send it!
+		print(f"[{self.track_name.upper()}] Webhook Payload: {payload}")
+		if hasattr(self.ApiClient, 'send_webhook'):
+			return self.ApiClient.send_webhook(payload)
+		return False
+

@@ -1,0 +1,152 @@
+blueprint:
+  name: 4DX Engine Router
+  description: Routes webhook calls from the 4DX Kodi Engine to Home Assistant devices.
+  domain: automation
+  input:
+    webhook_id:
+      name: Webhook ID
+      description: The webhook ID to listen to. Must match the one in Kodi Python script.
+      default: "4dx_hook"
+    color_light:
+      name: Color Light
+      description: The RGB light entity for the COLOR track.
+      selector:
+        entity:
+          domain: light
+    wind_fan:
+      name: Wind Fan
+      description: The fan entity for the WIND track.
+      selector:
+        entity:
+          domain: fan
+    transition_time:
+      name: Transition Time
+      description: Time in seconds to transition between states (default 0.1 for fast fades)
+      default: 0.1
+      selector:
+        number:
+          min: 0
+          max: 2
+          step: 0.1
+
+mode: parallel
+max: 20
+
+trigger:
+  - platform: webhook
+    webhook_id: !input webhook_id
+    allowed_methods:
+      - POST
+      - PUT
+    local_only: true
+
+action:
+  - variables:
+      transition_time: !input transition_time
+      
+  - choose:
+      # ==========================================
+      # 1. COLOR TRACK
+      # ==========================================
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.json.track == 'color' }}"
+        sequence:
+          - choose:
+              # -- FLASH COMMAND --
+              - conditions:
+                  - condition: template
+                    value_template: "{{ trigger.json.command == 'FLASH' }}"
+                sequence:
+                  - action: light.turn_on
+                    target:
+                      entity_id: !input color_light
+                    data:
+                      color_name: "{{ trigger.json.data | lower if trigger.json.data else 'white' }}"
+                      brightness_pct: "{{ trigger.json.intensity | default(100) }}"
+                      transition: 0 # Flashes must be instant
+                  # If duration exists, wait duration. Else wait 50ms for a quick strobe.
+                  - delay:
+                      seconds: "{{ (trigger.json.duration | float / 1000) if trigger.json.duration else 0.05 }}"
+                  - action: light.turn_off
+                    target:
+                      entity_id: !input color_light
+                    data:
+                      transition: 0 # Flashes must be instant
+
+              # -- ON COMMAND --
+              - conditions:
+                  - condition: template
+                    value_template: "{{ trigger.json.command == 'ON' }}"
+                sequence:
+                  - action: light.turn_on
+                    target:
+                      entity_id: !input color_light
+                    data:
+                      color_name: >
+                        {% if trigger.json.data %}
+                          {{ trigger.json.data | lower }}
+                        {% endif %}
+                      brightness_pct: "{{ trigger.json.intensity }}"
+                      transition: "{{ transition_time }}"
+                  # Duration check for non-flash
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ trigger.json.duration | default('') != '' }}"
+                        sequence:
+                          - delay:
+                              seconds: "{{ trigger.json.duration | float / 1000 }}"
+                          - action: light.turn_off
+                            target:
+                              entity_id: !input color_light
+                            data:
+                              transition: "{{ transition_time }}"
+
+              # -- OFF COMMAND --
+              - conditions:
+                  - condition: template
+                    value_template: "{{ trigger.json.command == 'OFF' }}"
+                sequence:
+                  - action: light.turn_off
+                    target:
+                      entity_id: !input color_light
+                    data:
+                      transition: "{{ transition_time }}"
+
+      # ==========================================
+      # 2. WIND TRACK
+      # ==========================================
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.json.track == 'wind' }}"
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ trigger.json.command == 'ON' }}"
+                sequence:
+                  - action: fan.turn_on
+                    target:
+                      entity_id: !input wind_fan
+                    data:
+                      percentage: "{{ trigger.json.intensity }}"
+                  # Duration check for fan
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ trigger.json.duration | default('') != '' }}"
+                        sequence:
+                          - delay:
+                              seconds: "{{ trigger.json.duration | float / 1000 }}"
+                          - action: fan.turn_off
+                            target:
+                              entity_id: !input wind_fan
+
+              - conditions:
+                  - condition: template
+                    value_template: "{{ trigger.json.command == 'OFF' }}"
+                sequence:
+                  - action: fan.turn_off
+                    target:
+                      entity_id: !input wind_fan
