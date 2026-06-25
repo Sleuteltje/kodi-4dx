@@ -4,6 +4,7 @@ import os
 import threading
 import time
 import socket
+import struct
 
 class CommandsExecuter:
 
@@ -236,14 +237,19 @@ class WindExecuter:
 		return self.Fan.turn_on(100)
 
 class TrackExecuter:
-	def __init__(self, track_name, ApiClient, delay=0, wled_ips=None):
+	def __init__(self, track_name, ApiClient, delay=0, wled_ips=None, lifx_ips=None):
 		self.track_name = track_name
 		self.ApiClient = ApiClient
 		self.delay = delay
 		self.wled_ips = wled_ips if wled_ips else []
+		self.lifx_ips = lifx_ips if lifx_ips else []
+		self.lifx_macs = {}
 		
-		# Set up UDP socket for direct WLED control
+		# Set up UDP socket for direct WLED/LIFX control
 		self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+		
+		if self.lifx_ips and self.track_name == "lightning":
+			self._discover_lifx_macs()
 
 	def get_filename(self):
 		return self.track_name
@@ -317,11 +323,15 @@ class TrackExecuter:
 		print(f"[{self.track_name.upper()}] Webhook Payload: {payload}")
 		
 		# Direct UDP for Lightning track
-		if self.track_name == "lightning" and self.wled_ips and payload["command"] == "FLASH":
+		if self.track_name == "lightning" and payload["command"] == "FLASH":
 			duration = payload.get("duration")
 			if not duration:
 				duration = 30
-			self._send_wled_udp_flash(payload["intensity"], duration)
+			
+			if self.wled_ips:
+				self._send_wled_udp_flash(payload["intensity"], duration)
+			if self.lifx_ips:
+				self._send_lifx_udp_flash(payload["intensity"], duration)
 			
 		if hasattr(self.ApiClient, 'send_webhook'):
 			return self.ApiClient.send_webhook(payload)
@@ -361,4 +371,69 @@ class TrackExecuter:
 					pass
 
 		threading.Thread(target=flash_thread).start()
+
+	def _discover_lifx_macs(self):
+		print(f"[{self.track_name.upper()}] Discovering MAC addresses for LIFX bulbs...")
+		discovery_packet = bytearray([
+			0x24, 0x00, 0x00, 0x34, 0x00, 0x00, 0x00, 0x00,
+			0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+			0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+			0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+			0x02, 0x00, 0x00, 0x00
+		])
+		
+		sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+		sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+		sock.settimeout(1.0)
+		
+		for ip in self.lifx_ips:
+			try:
+				sock.sendto(discovery_packet, (ip, 56700))
+			except:
+				pass
+		
+		end_time = time.time() + 2.0
+		while time.time() < end_time:
+			try:
+				data, addr = sock.recvfrom(1024)
+				ip = addr[0]
+				if ip in self.lifx_ips and ip not in self.lifx_macs:
+					self.lifx_macs[ip] = bytearray(data[8:16])
+					mac_hex = ':'.join(f'{b:02x}' for b in self.lifx_macs[ip][:6])
+					print(f"[{self.track_name.upper()}] Found LIFX bulb {ip} with MAC {mac_hex}")
+			except socket.timeout:
+				pass
+		sock.close()
+
+	def _send_lifx_udp_flash(self, intensity_pct, duration_ms):
+		if not self.lifx_ips:
+			return
+		
+		print(f"[{self.track_name.upper()}] Sending LIFX UDP Flash for {duration_ms}ms")
+		
+		# LIFX Payload for SetWaveform (Type 103)
+		payload = bytearray([0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0x64, 0x19])
+		payload += struct.pack("<I", int(duration_ms))
+		payload += struct.pack("<f", 1.0) # cycles
+		payload += struct.pack("<h", 0)   # skew_ratio
+		payload += bytearray([0x04])      # waveform: 4 (Pulse)
+		
+		for ip in self.lifx_ips:
+			mac = self.lifx_macs.get(ip, bytearray(8))
+			header = bytearray([
+				0x39, 0x00, 0x00, 0x34, 0x00, 0x00, 0x00, 0x00
+			])
+			header += mac
+			header += bytearray([
+				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+				0x67, 0x00, 0x00, 0x00
+			])
+			
+			packet = header + payload
+			
+			try:
+				self.udp_sock.sendto(packet, (ip, 56700))
+			except Exception as e:
+				print(f"Failed to send UDP to {ip}: {e}")
 

@@ -30,13 +30,18 @@ if 'WLED' in config and 'ips' in config['WLED']:
 	ips_str = config['WLED']['ips']
 	WLED_IPS = [ip.strip() for ip in ips_str.split(',') if ip.strip()]
 
+LIFX_IPS = []
+if 'LIFX' in config and 'ips' in config['LIFX']:
+	ips_str = config['LIFX']['ips']
+	LIFX_IPS = [ip.strip() for ip in ips_str.split(',') if ip.strip()]
+
 # Set up Home Assistant API Connection
 # Token is optional for webhooks
 Api = home_assistant_api.HomeAssistantApi(HA_API_URL, HA_WEBHOOK_ID, HA_AUTH_TOKEN)
 
 active_tracks = []
 for track_name, delay in tracks_to_load.items():
-	Executer = commands_executer.TrackExecuter(track_name, Api, delay, wled_ips=WLED_IPS)
+	Executer = commands_executer.TrackExecuter(track_name, Api, delay, wled_ips=WLED_IPS, lifx_ips=LIFX_IPS)
 	CmdExecuter = commands_executer.CommandsExecuter(Executer)
 	active_tracks.append(CmdExecuter)
 
