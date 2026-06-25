@@ -1,12 +1,16 @@
 from michsclasses import commands_parser
 import asyncio
 import os
+import threading
+import time
+import socket
 
 class CommandsExecuter:
 
 	def __init__(self, DeviceExecuter, movie_filename = None, filename = None):
 		self.DeviceExecuter = DeviceExecuter
-		self.movie_filename, self.directory = Kodi.get_file()
+		self.movie_filename = None
+		self.directory = ""
 		self.old_movie_filename = None
 		self.Parser = None
 		
@@ -232,10 +236,14 @@ class WindExecuter:
 		return self.Fan.turn_on(100)
 
 class TrackExecuter:
-	def __init__(self, track_name, ApiClient, delay=0):
+	def __init__(self, track_name, ApiClient, delay=0, wled_ips=None):
 		self.track_name = track_name
 		self.ApiClient = ApiClient
 		self.delay = delay
+		self.wled_ips = wled_ips if wled_ips else []
+		
+		# Set up UDP socket for direct WLED control
+		self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
 	def get_filename(self):
 		return self.track_name
@@ -307,7 +315,47 @@ class TrackExecuter:
 					
 		# Send it!
 		print(f"[{self.track_name.upper()}] Webhook Payload: {payload}")
+		
+		# Direct UDP for Lightning track
+		if self.track_name == "lightning" and self.wled_ips and payload["command"] == "FLASH":
+			duration = payload.get("duration")
+			if not duration:
+				duration = 50
+			self._send_wled_udp_flash(payload["intensity"], duration)
+			
 		if hasattr(self.ApiClient, 'send_webhook'):
 			return self.ApiClient.send_webhook(payload)
 		return False
+
+	def _send_wled_udp_flash(self, intensity_pct, duration_ms):
+		if not self.wled_ips:
+			return
+		
+		val = int((intensity_pct / 100.0) * 255)
+		print(f"[{self.track_name.upper()}] Sending WLED UDP Flash: Intensity {intensity_pct}% -> RGB({val},{val},{val}) for {duration_ms}ms")
+		
+		# WARLS Protocol (1): Timeout 1s (Byte 1), LED Index 255 (All), R, G, B
+		packet_on = bytes([1, 1, 255, val, val, val])
+		# Timeout 0 immediately ends realtime mode and returns to normal
+		packet_off = bytes([1, 0, 255, 0, 0, 0]) 
+		
+		def flash_thread():
+			# Turn ON
+			for ip in self.wled_ips:
+				try:
+					self.udp_sock.sendto(packet_on, (ip, 21324))
+				except Exception as e:
+					print(f"Failed to send UDP to {ip}: {e}")
+			
+			# Wait duration
+			time.sleep(duration_ms / 1000.0)
+			
+			# Turn OFF
+			for ip in self.wled_ips:
+				try:
+					self.udp_sock.sendto(packet_off, (ip, 21324))
+				except Exception as e:
+					pass
+
+		threading.Thread(target=flash_thread).start()
 
