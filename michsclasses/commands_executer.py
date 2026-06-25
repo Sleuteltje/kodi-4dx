@@ -320,7 +320,7 @@ class TrackExecuter:
 		if self.track_name == "lightning" and self.wled_ips and payload["command"] == "FLASH":
 			duration = payload.get("duration")
 			if not duration:
-				duration = 50
+				duration = 30
 			self._send_wled_udp_flash(payload["intensity"], duration)
 			
 		if hasattr(self.ApiClient, 'send_webhook'):
@@ -331,13 +331,16 @@ class TrackExecuter:
 		if not self.wled_ips:
 			return
 		
-		val = int((intensity_pct / 100.0) * 255)
-		print(f"[{self.track_name.upper()}] Sending WLED UDP Flash: Intensity {intensity_pct}% -> RGB({val},{val},{val}) for {duration_ms}ms")
+		# For lightning, we always want a blinding white flash.
+		# Intensity can be used in the future to decide HOW MANY lamps react.
+		val = 255
+		print(f"[{self.track_name.upper()}] Sending WLED UDP Flash: RGB({val},{val},{val}) for {duration_ms}ms (Intensity {intensity_pct}% used for logic later)")
 		
-		# WARLS Protocol (1): Timeout 1s (Byte 1), LED Index 255 (All), R, G, B
-		packet_on = bytes([1, 1, 255, val, val, val])
+		# DRGB Protocol (2): Timeout 1s (Byte 1), then R, G, B for each LED.
+		# We send 300 LEDs worth of white to guarantee it covers the whole strip.
+		packet_on = bytearray([2, 1]) + bytearray([val, val, val] * 300)
 		# Timeout 0 immediately ends realtime mode and returns to normal
-		packet_off = bytes([1, 0, 255, 0, 0, 0]) 
+		packet_off = bytearray([2, 0]) 
 		
 		def flash_thread():
 			# Turn ON
