@@ -251,6 +251,13 @@ class TrackExecuter:
 		self.lifx_macs = {}
 		self.lifx_bulbs = []
 		
+		# Concurrency locks for overlapping lightning flashes
+		self.wled_flash_count = 0
+		self.wled_flash_lock = threading.Lock()
+		self.lifx_flash_count = 0
+		self.lifx_flash_lock = threading.Lock()
+		self.lifx_state_cache = {}
+		
 		# Set up UDP socket for direct WLED control
 		self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 		
@@ -372,17 +379,23 @@ class TrackExecuter:
 					self.udp_sock.sendto(packet_on, (ip, 21324))
 				except Exception as e:
 					pass
+					
+			with self.wled_flash_lock:
+				self.wled_flash_count += 1
 			
 			# Wait duration (Min 50ms to ensure ESP renders the frame)
 			sleep_dur = max(0.05, duration_ms / 1000.0)
 			time.sleep(sleep_dur)
 			
-			# Turn OFF
-			for ip in self.wled_ips:
-				try:
-					self.udp_sock.sendto(packet_off, (ip, 21324))
-				except Exception as e:
-					pass
+			with self.wled_flash_lock:
+				self.wled_flash_count -= 1
+				if self.wled_flash_count == 0:
+					# Only the last active flash turns it OFF
+					for ip in self.wled_ips:
+						try:
+							self.udp_sock.sendto(packet_off, (ip, 21324))
+						except Exception as e:
+							pass
 
 		threading.Thread(target=flash_thread).start()
 
@@ -425,11 +438,13 @@ class TrackExecuter:
 		
 		print(f"[{self.track_name.upper()}] Sending LIFX Flash via lifxlan for {duration_ms}ms")
 		
-		def lifx_thread(bulb, duration):
+		def lifx_thread(bulb, ip, duration):
 			try:
-				# Fetch current state (takes ~50ms)
-				original_power = bulb.get_power()
-				original_color = bulb.get_color()
+				with self.lifx_flash_lock:
+					if self.lifx_flash_count == 0:
+						# First overlapping flash fetches the true idle state (takes ~50ms)
+						self.lifx_state_cache[ip] = (bulb.get_power(), bulb.get_color())
+					self.lifx_flash_count += 1
 				
 				# Force ON and White instantly (bypass waveform interpolation)
 				bulb.set_power(65535, rapid=True)
@@ -439,13 +454,17 @@ class TrackExecuter:
 				sleep_dur = max(0.05, duration / 1000.0)
 				time.sleep(sleep_dur)
 				
-				# Restore original state
-				bulb.set_color(original_color, rapid=True)
-				if original_power == 0:
-					bulb.set_power(0, rapid=True)
+				with self.lifx_flash_lock:
+					self.lifx_flash_count -= 1
+					if self.lifx_flash_count == 0:
+						# Only the last active flash restores the original idle state
+						original_power, original_color = self.lifx_state_cache.get(ip, (0, [0,0,65535,3500]))
+						bulb.set_color(original_color, rapid=True)
+						if original_power == 0:
+							bulb.set_power(0, rapid=True)
 			except Exception as e:
 				print(f"[{self.track_name.upper()}] LIFX Error: {e}")
 
-		for bulb in self.lifx_bulbs:
-			threading.Thread(target=lifx_thread, args=(bulb, duration_ms)).start()
+		for bulb, ip in zip(self.lifx_bulbs, self.lifx_ips):
+			threading.Thread(target=lifx_thread, args=(bulb, ip, duration_ms)).start()
 
