@@ -100,12 +100,14 @@ def test_wled_lightning(config):
 	time.sleep(3)
 	
 	print("3. Lightning effect (4 flashes)...")
-	for i in range(4):
+	# Varied realistic lightning timings to prevent dropped frames
+	timings = [(0.08, 0.1), (0.05, 0.08), (0.12, 0.15), (0.06, 0.2)]
+	for i, (dur_white, dur_black) in enumerate(timings):
 		print(f"   Flash {i+1}!")
 		send_wled(packet_white)
-		time.sleep(0.05) # 50ms flash
-		send_wled(packet_black) # Force render black before exiting
-		time.sleep(0.1) # Wait between flashes
+		time.sleep(dur_white)
+		send_wled(packet_black)
+		time.sleep(dur_black)
 	
 	send_wled(packet_exit) # Exit to idle ONLY after all flashes are done
 	print("Test complete.\n")
@@ -169,14 +171,13 @@ def test_lifx_lightning(config):
 			time.sleep(3)
 			
 			print("3. Lightning effect (4 flashes)...")
-			for i in range(4):
+			timings = [(0.08, 0.1), (0.05, 0.08), (0.12, 0.15), (0.06, 0.2)]
+			for i, (dur_white, dur_black) in enumerate(timings):
 				print(f"   Flash {i+1}!")
-				# Instant White
 				bulb.set_color([0, 0, 65535, 6500], duration=0, rapid=True)
-				time.sleep(0.05)
-				# Instant Black
+				time.sleep(dur_white)
 				bulb.set_color([0, 0, 0, 6500], duration=0, rapid=True)
-				time.sleep(0.1)
+				time.sleep(dur_black)
 				
 			print("4. Herstellen naar originele staat...")
 			if original_power == 0:
@@ -185,6 +186,8 @@ def test_lifx_lightning(config):
 			else:
 				bulb.set_color(original_color, duration=500, rapid=True)
 				
+			time.sleep(3) # Wait before starting the next test
+			
 			print("\n--- TEST: Red Background Lightning ---")
 			print("1. Set to RED...")
 			bulb.set_power(65535, duration=0, rapid=True)
@@ -192,13 +195,13 @@ def test_lifx_lightning(config):
 			time.sleep(3)
 			
 			print("2. Lightning effect (4 flashes)...")
-			for i in range(4):
+			timings = [(0.08, 0.1), (0.05, 0.08), (0.12, 0.15), (0.06, 0.2)]
+			for i, (dur_white, dur_red) in enumerate(timings):
 				print(f"   Flash {i+1}!")
 				bulb.set_color([0, 0, 65535, 6500], duration=0, rapid=True)
-				time.sleep(0.05)
-				# Between flashes, restore to RED instantly so the background is red!
+				time.sleep(dur_white)
 				bulb.set_color([0, 65535, 65535, 3500], duration=0, rapid=True)
-				time.sleep(0.1)
+				time.sleep(dur_red)
 				
 			print("3. Restoring to original state...")
 			if original_power == 0:
