@@ -87,9 +87,9 @@ def test_wled_lightning(config):
 				pass
 
 	val = 255
-	packet_white = bytearray([1, 2, 255, val, val, val])
-	packet_black = bytearray([1, 2, 255, 0, 0, 0])
-	packet_exit = bytearray([1, 0, 255, 0, 0, 0])
+	packet_white = bytearray([2, 2]) + bytearray([val, val, val] * 300) # Timeout 2s
+	packet_black = bytearray([2, 2]) + bytearray([0, 0, 0] * 300)
+	packet_exit = bytearray([2, 0]) # Exit realtime mode
 	
 	print("1. WLED 100% White voor 1 seconde...")
 	send_wled(packet_white)

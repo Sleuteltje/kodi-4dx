@@ -366,11 +366,12 @@ class TrackExecuter:
 		val = 255
 		print(f"[{self.track_name.upper()}] Sending WLED UDP Flash: RGB({val},{val},{val}) for {duration_ms}ms (Intensity {intensity_pct}% used for logic later)")
 		
-		# WARLS Protocol (1): Timeout 2s (Byte 1), LED Index 255 (All), R, G, B
-		packet_on = bytearray([1, 2, 255, val, val, val])
-		packet_black = bytearray([1, 2, 255, 0, 0, 0])
+		# DRGB Protocol (2): Timeout 2s (Byte 1), then R, G, B for each LED.
+		# We send 300 LEDs worth of white to guarantee it covers the whole strip.
+		packet_on = bytearray([2, 2]) + bytearray([val, val, val] * 300) # Increased timeout to 2s
+		packet_black = bytearray([2, 2]) + bytearray([0, 0, 0] * 300)
 		# Timeout 0 immediately ends realtime mode and returns to normal
-		packet_off = bytearray([1, 0, 255, 0, 0, 0])
+		packet_off = bytearray([2, 0])
 		
 		def flash_thread():
 			# Turn ON
