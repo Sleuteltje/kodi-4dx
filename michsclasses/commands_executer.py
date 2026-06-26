@@ -366,12 +366,11 @@ class TrackExecuter:
 		val = 255
 		print(f"[{self.track_name.upper()}] Sending WLED UDP Flash: RGB({val},{val},{val}) for {duration_ms}ms (Intensity {intensity_pct}% used for logic later)")
 		
-		# DRGB Protocol (2): Timeout 1s (Byte 1), then R, G, B for each LED.
-		# We send 300 LEDs worth of white to guarantee it covers the whole strip.
-		packet_on = bytearray([2, 2]) + bytearray([val, val, val] * 300) # Increased timeout to 2s
-		packet_black = bytearray([2, 2]) + bytearray([0, 0, 0] * 300)
+		# WARLS Protocol (1): Timeout 2s (Byte 1), LED Index 255 (All), R, G, B
+		packet_on = bytearray([1, 2, 255, val, val, val])
+		packet_black = bytearray([1, 2, 255, 0, 0, 0])
 		# Timeout 0 immediately ends realtime mode and returns to normal
-		packet_off = bytearray([2, 0]) 
+		packet_off = bytearray([1, 0, 255, 0, 0, 0])
 		
 		def flash_thread():
 			# Turn ON
@@ -477,10 +476,13 @@ class TrackExecuter:
 					if self.lifx_flash_count == 0:
 						# Only the last active flash restores the original idle state
 						original_power, original_color = self.lifx_state_cache.get(ip, (0, [0,0,65535,3500]))
-						bulb.set_color(original_color, duration=200, rapid=True) # Soft fade back to normal color
 						if original_power == 0:
-							time.sleep(0.2)
+							# If it was off, just keep it black and power it off instantly
+							bulb.set_color([0, 0, 0, 6500], duration=0, rapid=True)
 							bulb.set_power(0, duration=0, rapid=True)
+						else:
+							# If it was on, fade back to the original color
+							bulb.set_color(original_color, duration=200, rapid=True)
 					else:
 						# Not the last flash, so instantly turn Black for sharp gaps between flashes
 						bulb.set_color([0, 0, 0, 6500], duration=0, rapid=True)

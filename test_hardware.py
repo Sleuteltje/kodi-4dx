@@ -87,9 +87,9 @@ def test_wled_lightning(config):
 				pass
 
 	val = 255
-	packet_white = bytearray([2, 2]) + bytearray([val, val, val] * 300) # Timeout 2s
-	packet_black = bytearray([2, 2]) + bytearray([0, 0, 0] * 300)
-	packet_exit = bytearray([2, 0]) # Exit realtime mode
+	packet_white = bytearray([1, 2, 255, val, val, val])
+	packet_black = bytearray([1, 2, 255, 0, 0, 0])
+	packet_exit = bytearray([1, 0, 255, 0, 0, 0])
 	
 	print("1. WLED 100% White voor 1 seconde...")
 	send_wled(packet_white)
@@ -179,10 +179,33 @@ def test_lifx_lightning(config):
 				time.sleep(0.1)
 				
 			print("4. Herstellen naar originele staat...")
-			bulb.set_color(original_color, duration=500, rapid=True)
 			if original_power == 0:
-				time.sleep(0.5)
+				bulb.set_color([0, 0, 0, 6500], duration=0, rapid=True)
 				bulb.set_power(0, duration=0, rapid=True)
+			else:
+				bulb.set_color(original_color, duration=500, rapid=True)
+				
+			print("\n--- TEST: Red Background Lightning ---")
+			print("1. Set to RED...")
+			bulb.set_power(65535, duration=0, rapid=True)
+			bulb.set_color([0, 65535, 65535, 3500], duration=500, rapid=True)
+			time.sleep(3)
+			
+			print("2. Lightning effect (4 flashes)...")
+			for i in range(4):
+				print(f"   Flash {i+1}!")
+				bulb.set_color([0, 0, 65535, 6500], duration=0, rapid=True)
+				time.sleep(0.05)
+				# Between flashes, restore to RED instantly so the background is red!
+				bulb.set_color([0, 65535, 65535, 3500], duration=0, rapid=True)
+				time.sleep(0.1)
+				
+			print("3. Restoring to original state...")
+			if original_power == 0:
+				bulb.set_color([0, 0, 0, 6500], duration=0, rapid=True)
+				bulb.set_power(0, duration=0, rapid=True)
+			else:
+				bulb.set_color(original_color, duration=500, rapid=True)
 				
 		except Exception as e:
 			print(f"LIFX fout: {e}")
