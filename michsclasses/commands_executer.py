@@ -368,7 +368,8 @@ class TrackExecuter:
 		
 		# DRGB Protocol (2): Timeout 1s (Byte 1), then R, G, B for each LED.
 		# We send 300 LEDs worth of white to guarantee it covers the whole strip.
-		packet_on = bytearray([2, 1]) + bytearray([val, val, val] * 300)
+		packet_on = bytearray([2, 2]) + bytearray([val, val, val] * 300) # Increased timeout to 2s
+		packet_black = bytearray([2, 2]) + bytearray([0, 0, 0] * 300)
 		# Timeout 0 immediately ends realtime mode and returns to normal
 		packet_off = bytearray([2, 0]) 
 		
@@ -389,8 +390,17 @@ class TrackExecuter:
 			
 			with self.wled_flash_lock:
 				self.wled_flash_count -= 1
+				
+				# Always turn black to end the flash quickly without skipping frames
+				for ip in self.wled_ips:
+					try:
+						self.udp_sock.sendto(packet_black, (ip, 21324))
+					except Exception:
+						pass
+				
 				if self.wled_flash_count == 0:
-					# Only the last active flash turns it OFF
+					# Give it 50ms to render the black frame, then exit realtime mode
+					time.sleep(0.05)
 					for ip in self.wled_ips:
 						try:
 							self.udp_sock.sendto(packet_off, (ip, 21324))
@@ -443,12 +453,20 @@ class TrackExecuter:
 				with self.lifx_flash_lock:
 					if self.lifx_flash_count == 0:
 						# First overlapping flash fetches the true idle state (takes ~50ms)
-						self.lifx_state_cache[ip] = (bulb.get_power(), bulb.get_color())
+						original_power = bulb.get_power()
+						original_color = bulb.get_color()
+						self.lifx_state_cache[ip] = (original_power, original_color)
+						
+						# Pre-warm: If OFF, set to Black and turn ON to bypass slow hardware power-fade
+						if original_power == 0:
+							bulb.set_color([0, 0, 0, 6500], duration=0, rapid=True)
+							bulb.set_power(65535, duration=0, rapid=True)
+							time.sleep(0.15) # Wait for hardware fade to finish invisibly
+							
 					self.lifx_flash_count += 1
 				
-				# Force ON and White instantly (bypass waveform interpolation)
-				bulb.set_power(65535, rapid=True)
-				bulb.set_color([0, 0, 65535, 6500], rapid=True)
+				# Force White instantly
+				bulb.set_color([0, 0, 65535, 6500], duration=0, rapid=True)
 				
 				# Wait duration (Min 50ms)
 				sleep_dur = max(0.05, duration / 1000.0)
@@ -459,9 +477,13 @@ class TrackExecuter:
 					if self.lifx_flash_count == 0:
 						# Only the last active flash restores the original idle state
 						original_power, original_color = self.lifx_state_cache.get(ip, (0, [0,0,65535,3500]))
-						bulb.set_color(original_color, rapid=True)
+						bulb.set_color(original_color, duration=200, rapid=True) # Soft fade back to normal color
 						if original_power == 0:
-							bulb.set_power(0, rapid=True)
+							time.sleep(0.2)
+							bulb.set_power(0, duration=0, rapid=True)
+					else:
+						# Not the last flash, so instantly turn Black for sharp gaps between flashes
+						bulb.set_color([0, 0, 0, 6500], duration=0, rapid=True)
 			except Exception as e:
 				print(f"[{self.track_name.upper()}] LIFX Error: {e}")
 

@@ -105,10 +105,9 @@ def test_wled_lightning(config):
 		send_wled(packet_white)
 		time.sleep(0.05) # 50ms flash
 		send_wled(packet_black) # Force render black before exiting
-		time.sleep(0.05)
-		send_wled(packet_exit) # Exit to idle
 		time.sleep(0.1) # Wait between flashes
-		
+	
+	send_wled(packet_exit) # Exit to idle ONLY after all flashes are done
 	print("Test complete.\n")
 
 def test_lifx_lightning(config):
@@ -154,28 +153,36 @@ def test_lifx_lightning(config):
 			original_power = bulb.get_power()
 			original_color = bulb.get_color()
 			
+			print("0. LIFX Pre-warming (invisible power-on if it was off)...")
+			if original_power == 0:
+				# Set color to Black (Brightness 0) instantly so the power-on fade is invisible
+				bulb.set_color([0, 0, 0, 6500], duration=0, rapid=True)
+				bulb.set_power(65535, duration=0, rapid=True)
+				time.sleep(0.3) # Wait for the physical bulb to finish its invisible power-on fade
+			
 			print("1. LIFX 100% White voor 1 seconde...")
-			bulb.set_power(65535, rapid=True)
-			bulb.set_color([0, 0, 65535, 6500], rapid=True)
+			bulb.set_color([0, 0, 65535, 6500], duration=0, rapid=True)
 			time.sleep(1)
 			
-			print("2. LIFX Off... lightning in 3... 2... 1...")
-			bulb.set_power(0, rapid=True)
+			print("2. LIFX Off (Black)... lightning in 3... 2... 1...")
+			bulb.set_color([0, 0, 0, 6500], duration=0, rapid=True)
 			time.sleep(3)
 			
 			print("3. Lightning effect (4 flashes)...")
 			for i in range(4):
 				print(f"   Flash {i+1}!")
-				bulb.set_power(65535, rapid=True)
-				bulb.set_color([0, 0, 65535, 6500], rapid=True)
+				# Instant White
+				bulb.set_color([0, 0, 65535, 6500], duration=0, rapid=True)
 				time.sleep(0.05)
-				bulb.set_power(0, rapid=True)
+				# Instant Black
+				bulb.set_color([0, 0, 0, 6500], duration=0, rapid=True)
 				time.sleep(0.1)
 				
 			print("4. Herstellen naar originele staat...")
-			bulb.set_color(original_color, rapid=True)
-			if original_power == 65535:
-				bulb.set_power(65535, rapid=True)
+			bulb.set_color(original_color, duration=500, rapid=True)
+			if original_power == 0:
+				time.sleep(0.5)
+				bulb.set_power(0, duration=0, rapid=True)
 				
 		except Exception as e:
 			print(f"LIFX fout: {e}")
