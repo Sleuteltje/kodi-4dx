@@ -31,6 +31,10 @@ class CommandsExecuter:
 
 	def load_file(self, filepath=None):
 		import zipfile
+		
+		# Always reset Parser when loading a new file so old commands don't leak
+		self.Parser = None
+
 		if filepath:
 			self.Parser = commands_parser.Commands(file_path=filepath)
 			print("Loaded Parser through filepath")
