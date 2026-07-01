@@ -378,37 +378,38 @@ class TrackExecuter:
 		packet_off = bytearray([2, 0])
 		
 		def flash_thread():
-			# Turn ON
-			for ip in self.wled_ips:
-				try:
-					self.udp_sock.sendto(packet_on, (ip, 21324))
-				except Exception as e:
-					pass
-					
 			with self.wled_flash_lock:
 				self.wled_flash_count += 1
 			
-			# Wait duration (Min 50ms to ensure ESP renders the frame)
-			sleep_dur = max(0.05, duration_ms / 1000.0)
-			time.sleep(sleep_dur)
+			end_time = time.time() + max(0.05, duration_ms / 1000.0)
+			
+			# Stream 'ON' at ~60fps to guarantee delivery and keep ESP awake
+			while time.time() < end_time:
+				for ip in self.wled_ips:
+					try:
+						self.udp_sock.sendto(packet_on, (ip, 21324))
+					except Exception:
+						pass
+				time.sleep(0.016)
 			
 			with self.wled_flash_lock:
 				self.wled_flash_count -= 1
 				
-				# Always turn black to end the flash quickly without skipping frames
-				for ip in self.wled_ips:
-					try:
-						self.udp_sock.sendto(packet_black, (ip, 21324))
-					except Exception:
-						pass
-				
 				if self.wled_flash_count == 0:
-					# Give it 50ms to render the black frame, then exit realtime mode
-					time.sleep(0.05)
+					# Blast 'BLACK' for ~5 frames (80ms) to guarantee turn off
+					for _ in range(5):
+						for ip in self.wled_ips:
+							try:
+								self.udp_sock.sendto(packet_black, (ip, 21324))
+							except Exception:
+								pass
+						time.sleep(0.016)
+					
+					# Exit realtime mode
 					for ip in self.wled_ips:
 						try:
 							self.udp_sock.sendto(packet_off, (ip, 21324))
-						except Exception as e:
+						except Exception:
 							pass
 
 		threading.Thread(target=flash_thread).start()

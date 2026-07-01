@@ -5,6 +5,7 @@ import configparser
 import json
 import urllib.request
 import urllib.error
+import sys
 try:
 	from lifxlan import Light
 except ImportError:
@@ -70,63 +71,58 @@ def test_ha_color(config):
 	send_ha_webhook(config, "color", "TURN_OFF")
 	print("Test complete.\n")
 
-def test_wled_lightning(config):
-	print("\n--- TEST: WLED Direct UDP (LIGHTNING) ---")
-	if 'WLED' not in config or 'ips' not in config['WLED']:
-		print("Geen WLED ips in config.")
-		return
-	ips = [ip.strip() for ip in config['WLED']['ips'].split(',') if ip.strip()]
+def test_unified_color(config):
+	print("\n--- TEST: UNIFIED COLOR (WLED & LIFX TEGELIJK) ---")
+	wled_ips, lifx_ips, lifx_bulbs, sock = setup_unified(config)
 	
-	sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-	
-	def send_wled(packet):
-		for ip in ips:
+	def set_all(r, g, b, h, s, v, k):
+		packet = bytearray([2, 2]) + bytearray([r, g, b] * 300)
+		for ip in wled_ips:
 			try:
 				sock.sendto(packet, (ip, 21324))
 			except:
 				pass
+		for bulb in lifx_bulbs:
+			try:
+				bulb.set_color([h, s, v, k], duration=0, rapid=True)
+				bulb.set_power(65535, duration=0, rapid=True)
+			except:
+				pass
 
-	val = 255
-	packet_white = bytearray([2, 2]) + bytearray([val, val, val] * 300) # Timeout 2s
-	packet_black = bytearray([2, 2]) + bytearray([0, 0, 0] * 300)
-	packet_exit = bytearray([2, 0]) # Exit realtime mode
-	
-	print("1. WLED 100% White voor 1 seconde...")
-	send_wled(packet_white)
+	print("1. Kleuren check (Rood, Groen, Blauw, Paars - elk 1s)")
+	set_all(255, 0, 0, 0, 65535, 65535, 3500) # Rood
+	time.sleep(1)
+	set_all(0, 255, 0, 21845, 65535, 65535, 3500) # Groen
+	time.sleep(1)
+	set_all(0, 0, 255, 43690, 65535, 65535, 3500) # Blauw
+	time.sleep(1)
+	set_all(128, 0, 128, 50000, 65535, 65535, 3500) # Paars
 	time.sleep(1)
 	
-	print("2. WLED Off... lightning in 3... 2... 1...")
-	send_wled(packet_exit)
-	time.sleep(3)
-	
-	print("3. Lightning effect (4 flashes)...")
-	# Varied realistic lightning timings to prevent dropped frames
-	timings = [(0.08, 0.1), (0.05, 0.08), (0.12, 0.15), (0.06, 0.2)]
-	for i, (dur_white, dur_black) in enumerate(timings):
-		print(f"   Flash {i+1}!")
-		send_wled(packet_white)
-		time.sleep(dur_white)
-		send_wled(packet_black)
-		time.sleep(dur_black)
-	
-	send_wled(packet_exit) # Exit to idle ONLY after all flashes are done
-	print("Test complete.\n")
+	print("\nTest voltooid! WLED en LIFX worden afgesloten / idle.")
+	for ip in wled_ips:
+		sock.sendto(bytearray([2, 0]), (ip, 21324))
+	for bulb in lifx_bulbs:
+		try:
+			bulb.set_power(0, duration=0, rapid=True)
+		except:
+			pass
+	print("Klaar.")
 
-def test_lifx_lightning(config):
-	print("\n--- TEST: LIFX Direct UDP (LIGHTNING) ---")
-	if 'LIFX' not in config or 'ips' not in config['LIFX']:
-		print("Geen LIFX ips in config.")
-		return
-	ips = [ip.strip() for ip in config['LIFX']['ips'].split(',') if ip.strip()]
+def setup_unified(config):
+	wled_ips = []
+	if 'WLED' in config and 'ips' in config['WLED']:
+		wled_ips = [ip.strip() for ip in config['WLED']['ips'].split(',') if ip.strip()]
 	
-	if not Light:
-		print("lifxlan library is niet geïnstalleerd!")
-		return
-		
-	bulbs = []
-	for ip in ips:
-		print(f"Ontdekken van MAC voor {ip}...")
-		# Quick discovery logic to get MAC
+	sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+	
+	lifx_ips = []
+	if 'LIFX' in config and 'ips' in config['LIFX']:
+		lifx_ips = [ip.strip() for ip in config['LIFX']['ips'].split(',') if ip.strip()]
+	
+	lifx_bulbs = []
+	if Light and lifx_ips:
+		print("LIFX lampen ontdekken...")
 		discovery_packet = bytearray([
 			0x24, 0x00, 0x00, 0x34, 0x00, 0x00, 0x00, 0x00,
 			0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -134,97 +130,161 @@ def test_lifx_lightning(config):
 			0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 			0x02, 0x00, 0x00, 0x00
 		])
-		sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-		sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-		sock.settimeout(2.0)
-		sock.sendto(discovery_packet, (ip, 56700))
-		try:
-			data, addr = sock.recvfrom(1024)
-			mac = bytearray(data[8:16])
-			mac_hex = ':'.join(f'{b:02x}' for b in mac[:6])
-			print(f"Gevonden: {mac_hex}")
-			bulbs.append(Light(mac_hex, ip))
-		except:
-			print("MAC discovery mislukt!")
-	
-	if not bulbs:
-		return
+		dsock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+		dsock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+		dsock.settimeout(2.0)
+		for ip in lifx_ips:
+			try:
+				dsock.sendto(discovery_packet, (ip, 56700))
+				data, addr = dsock.recvfrom(1024)
+				mac = bytearray(data[8:16])
+				mac_hex = ':'.join(f'{b:02x}' for b in mac[:6])
+				lifx_bulbs.append(Light(mac_hex, ip))
+			except:
+				pass
+		dsock.close()
 		
-	for bulb in bulbs:
+	return wled_ips, lifx_ips, lifx_bulbs, sock
+
+def test_unified_lightning(config, gap_ms=500):
+	gap_s = gap_ms / 1000.0
+	print(f"\n--- TEST: UNIFIED LIGHTNING (WLED & LIFX TEGELIJK) [Pauzes: {gap_ms}ms] ---")
+	
+	# --- Init ---
+	wled_ips, lifx_ips, lifx_bulbs, sock = setup_unified(config)
+	
+	def stream_flash(duration_s, r, g, b, h, s, v, k):
+		packet_on = bytearray([2, 2]) + bytearray([r, g, b] * 300)
+		for bulb in lifx_bulbs:
+			try:
+				bulb.set_color([h, s, v, k], duration=0, rapid=True)
+			except:
+				pass
+				
+		end_time = time.time() + duration_s
+		# Stuur UDP stream op ~60fps voor de duur van de flits
+		while time.time() < end_time:
+			for ip in wled_ips:
+				try:
+					sock.sendto(packet_on, (ip, 21324))
+				except:
+					pass
+			time.sleep(0.016)
+			
+		# Forceer ZWART en stuur dit ook even een paar frames (80ms) om packet loss van de 'UIT' command op te vangen
+		packet_off = bytearray([2, 2]) + bytearray([0, 0, 0] * 300)
+		for bulb in lifx_bulbs:
+			try:
+				bulb.set_color([0, 0, 0, 6500], duration=0, rapid=True)
+			except:
+				pass
+		for _ in range(5):
+			for ip in wled_ips:
+				try:
+					sock.sendto(packet_off, (ip, 21324))
+				except:
+					pass
+			time.sleep(0.016)
+
+	print("\n-- PRE-WARMING LIFX --")
+	# We force power ON invisibly so we don't suffer hardware fades later
+	for bulb in lifx_bulbs:
 		try:
-			original_power = bulb.get_power()
-			original_color = bulb.get_color()
-			
-			print("0. LIFX Pre-warming (invisible power-on if it was off)...")
-			if original_power == 0:
-				# Set color to Black (Brightness 0) instantly so the power-on fade is invisible
-				bulb.set_color([0, 0, 0, 6500], duration=0, rapid=True)
-				bulb.set_power(65535, duration=0, rapid=True)
-				time.sleep(0.3) # Wait for the physical bulb to finish its invisible power-on fade
-			
-			print("1. LIFX 100% White voor 1 seconde...")
-			bulb.set_color([0, 0, 65535, 6500], duration=0, rapid=True)
-			time.sleep(1)
-			
-			print("2. LIFX Off (Black)... lightning in 3... 2... 1...")
-			bulb.set_color([0, 0, 0, 6500], duration=0, rapid=True)
-			time.sleep(3)
-			
-			print("3. Lightning effect (4 flashes)...")
-			timings = [(0.08, 0.1), (0.05, 0.08), (0.12, 0.15), (0.06, 0.2)]
-			for i, (dur_white, dur_black) in enumerate(timings):
-				print(f"   Flash {i+1}!")
-				bulb.set_color([0, 0, 65535, 6500], duration=0, rapid=True)
-				time.sleep(dur_white)
-				bulb.set_color([0, 0, 0, 6500], duration=0, rapid=True)
-				time.sleep(dur_black)
-				
-			print("4. Herstellen naar originele staat...")
-			if original_power == 0:
-				bulb.set_color([0, 0, 0, 6500], duration=0, rapid=True)
-				bulb.set_power(0, duration=0, rapid=True)
-			else:
-				bulb.set_color(original_color, duration=500, rapid=True)
-				
-			time.sleep(3) # Wait before starting the next test
-			
-			print("\n--- TEST: Red Background Lightning ---")
-			print("1. Set to RED...")
+			bulb.set_color([0,0,0,6500], duration=0, rapid=True)
 			bulb.set_power(65535, duration=0, rapid=True)
-			bulb.set_color([0, 65535, 65535, 3500], duration=500, rapid=True)
-			time.sleep(3)
-			
-			print("2. Lightning effect (4 flashes)...")
-			timings = [(0.08, 0.1), (0.05, 0.08), (0.12, 0.15), (0.06, 0.2)]
-			for i, (dur_white, dur_red) in enumerate(timings):
-				print(f"   Flash {i+1}!")
-				bulb.set_color([0, 0, 65535, 6500], duration=0, rapid=True)
-				time.sleep(dur_white)
-				bulb.set_color([0, 65535, 65535, 3500], duration=0, rapid=True)
-				time.sleep(dur_red)
-				
-			print("3. Restoring to original state...")
-			if original_power == 0:
-				bulb.set_color([0, 0, 0, 6500], duration=0, rapid=True)
-				bulb.set_power(0, duration=0, rapid=True)
-			else:
-				bulb.set_color(original_color, duration=500, rapid=True)
-				
-		except Exception as e:
-			print(f"LIFX fout: {e}")
-			
-	print("Test complete.\n")
+		except:
+			pass
+	time.sleep(0.5)
+
+	# 1. Wit 1 sec, dan Zwart
+	print("\n1. Wit aan voor 1 seconde, dan uit (zwart)")
+	stream_flash(1.0, 255, 255, 255, 0, 0, 65535, 6500)
+
+	print("Wacht 2 seconden...")
+	time.sleep(2)
+
+	# 3. 1 snelle flits (50ms wit, dan 0.5s wachten, dan zwart)
+	print("3. Eén enkele super snelle flits (50ms)")
+	stream_flash(0.05, 255, 255, 255, 0, 0, 65535, 6500)
+
+	print("Wacht 2 seconden...")
+	time.sleep(2)
+
+	# 4. 4 snelle flitsen met gap pauze
+	print(f"4. Vier snelle flitsen achter elkaar ({gap_ms}ms pauzes)")
+	for i in range(4):
+		stream_flash(0.05, 255, 255, 255, 0, 0, 65535, 6500)
+		time.sleep(gap_s) # Gap duration
+
+	print("Wacht 2 seconden...")
+	time.sleep(2)
+
+	# 5. Tragere intensere flits
+	print("5. Eén tragere, zware bliksemschicht (200ms)")
+	stream_flash(0.2, 255, 255, 255, 0, 0, 65535, 6500)
+
+	print("Wacht 2 seconden...")
+	time.sleep(2)
+
+	# 6. 4 tragere flitsen met gap pauze
+	print(f"6. Vier zware bliksemschichten (200ms) met ({gap_ms}ms) pauzes ertussen")
+	for i in range(4):
+		stream_flash(0.2, 255, 255, 255, 0, 0, 65535, 6500)
+		time.sleep(gap_s) # Gap duration
+
+	print("Wacht 2 seconden...")
+	time.sleep(2)
+
+	# 7. 4 flitsen van zwak naar sterk
+	print(f"7. Vier flitsen (GROEN) opbouwend in intensiteit (25%, 50%, 75%, 100%) met {gap_ms}ms pauze")
+	intensities = [0.25, 0.50, 0.75, 1.0]
+	for pct in intensities:
+		wled_val = int(255 * pct)
+		lifx_val = int(65535 * pct)
+		stream_flash(0.05, 0, wled_val, 0, 21845, 65535, lifx_val, 6500)
+		time.sleep(gap_s) # Gap duration
+
+	print("\nTest voltooid! WLED en LIFX worden afgesloten / idle.")
+	# WLED Exit realtime mode
+	for ip in wled_ips:
+		sock.sendto(bytearray([2, 0]), (ip, 21324))
+	# LIFX Power Off
+	for bulb in lifx_bulbs:
+		try:
+			bulb.set_power(0, duration=0, rapid=True)
+		except:
+			pass
+	print("Klaar.")
 
 def main():
 	config = load_config()
+	
+	# Check for command line arguments
+	if len(sys.argv) > 1:
+		choice = sys.argv[1]
+		gap_ms = 50
+		if len(sys.argv) > 2:
+			try:
+				gap_ms = int(sys.argv[2])
+			except ValueError:
+				pass
+				
+		if choice == "1":
+			test_ha_wind(config)
+		elif choice == "2":
+			test_ha_color(config)
+		elif choice == "3":
+			test_unified_lightning(config, gap_ms)
+		return # Exit immediately after running the argument
+		
 	while True:
 		print("====================================")
 		print("      4DX Hardware Test Script")
 		print("====================================")
 		print("1. Test Home Assistant Webhook (WIND)")
 		print("2. Test Home Assistant Webhook (COLOR)")
-		print("3. Test WLED Direct UDP (LIGHTNING)")
-		print("4. Test LIFX Direct UDP (LIGHTNING)")
+		print("3. Test UNIFIED LIGHTNING (WLED & LIFX Tegelijk)")
+		print("4. Test UNIFIED COLOR (WLED & LIFX Tegelijk)")
 		print("0. Afsluiten")
 		
 		choice = input("Maak een keuze: ")
@@ -233,9 +293,9 @@ def main():
 		elif choice == "2":
 			test_ha_color(config)
 		elif choice == "3":
-			test_wled_lightning(config)
+			test_unified_lightning(config)
 		elif choice == "4":
-			test_lifx_lightning(config)
+			test_unified_color(config)
 		elif choice == "0":
 			break
 		else:
