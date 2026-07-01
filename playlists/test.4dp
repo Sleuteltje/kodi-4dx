@@ -1,0 +1,22 @@
+
+[TRIVIA] REPEAT, IMG:2000
+F:/trivia.jpeg
+F:/trivia2.jpeg 5000
+F:/trivia3.jpeg + F:/trivia.mp3
+F:/trivia.mkv
+
+[THEATERINTRO]
+REPEAT F:/theaterwelcome.mkv 
+F:/mytheater.mkv
+
+[TRAILERS]
+F:/trailers/trailer.mkv
+plugin://video.youtube/videoid?=4834 (of hoe dit format er ook maar uit ziet van de kodi youtube plugin)
+
+[MOVIE]
+F:/movies/movie.mkv
+
+[PAUSE] REPEAT DURATION:60000 MUSIC:"F:/bg.mp3"
+F:/pausescreen.jpeg 5000
+F:/letsallgotothelobby.mkv
+F:/commercials.mkv
