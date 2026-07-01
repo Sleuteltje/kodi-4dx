@@ -19,6 +19,13 @@ blueprint:
       selector:
         entity:
           domain: fan
+    bubbles_switch:
+      name: Bubbles Switch
+      description: The switch entity for the BUBBLES track.
+      default: ""
+      selector:
+        entity:
+          domain: switch
     transition_time:
       name: Transition Time
       description: Time in seconds to transition between states (default 0.1 for fast fades)
@@ -150,3 +157,37 @@ action:
                   - action: fan.turn_off
                     target:
                       entity_id: !input wind_fan
+
+      # ==========================================
+      # 3. BUBBLES TRACK
+      # ==========================================
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.json.track == 'bubbles' }}"
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ trigger.json.command == 'ON' or trigger.json.command == 'BUBBLES' }}"
+                sequence:
+                  - action: switch.turn_on
+                    target:
+                      entity_id: !input bubbles_switch
+                  - choose:
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ trigger.json.duration | default('') != '' }}"
+                        sequence:
+                          - delay:
+                              seconds: "{{ trigger.json.duration | float / 1000 }}"
+                          - action: switch.turn_off
+                            target:
+                              entity_id: !input bubbles_switch
+
+              - conditions:
+                  - condition: template
+                    value_template: "{{ trigger.json.command == 'OFF' }}"
+                sequence:
+                  - action: switch.turn_off
+                    target:
+                      entity_id: !input bubbles_switch
